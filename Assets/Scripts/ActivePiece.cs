@@ -244,14 +244,83 @@ public class ActivePiece : MonoBehaviour
     }
 
     private void OnSettle()
+{
+    if (settled) return;
+    settled = true;
+    Debug.Log("[ActivePiece] Settled at origin " + origin + " (locking blocks)");
+
+    // Stop coroutines / input state used by the DAS/ARR version
+    if (fallCoroutine != null)
     {
-        if (settled) return;
-        settled = true;
-        Debug.Log("[ActivePiece] Settled at origin " + origin + " (lockResetCount=" + lockResetCount + ")");
-        if (fallCoroutine != null) StopCoroutine(fallCoroutine);
-        leftHeld = rightHeld = downHeld = false;
-        // FUTURE: transfer blocks into locked layer/tilemap here
+        StopCoroutine(fallCoroutine);
+        fallCoroutine = null;
     }
+
+    // Clear any hold state so repeated input stops
+    leftHeld = rightHeld = downHeld = false;
+    leftHoldTimer = rightHoldTimer = leftRepeatTimer = rightRepeatTimer = 0f;
+
+    // Collect block transforms (they are currently children of this piece)
+    var transforms = new List<Transform>();
+    foreach (var b in blocks)
+    {
+        if (b != null)
+            transforms.Add(b.transform);
+    }
+
+    // Add to grid (this will snap them to exact cell centers and parent them under lockedBlocksParent)
+    var added = GridManager.Instance.AddBlocksToGrid(transforms);
+
+    // Check for full rows
+    var fullRows = GridManager.Instance.GetFullRows();
+    if (fullRows.Count > 0)
+    {
+        // If there's a GameManager, let it animate the clear then continue
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.StartClearCoroutine(fullRows);
+        }
+        else
+        {
+            // Immediate clear fallback: clear and return cleared blocks to pool
+            var cleared = GridManager.Instance.ClearRowsImmediate(fullRows);
+            foreach (var go in cleared)
+            {
+                BlockPool.Instance.Return(go);
+            }
+
+            // Spawn the next piece
+            if (PieceSpawner.Instance != null) PieceSpawner.Instance.SpawnNextRandom();
+        }
+    }
+    else
+    {
+        // No full rows -> spawn next piece
+        if (PieceSpawner.Instance != null) PieceSpawner.Instance.SpawnNextRandom();
+
+        // Check game over
+        if (GridManager.Instance.IsGameOver())
+        {
+            if (GameManager.Instance != null) GameManager.Instance.GameOver();
+            else Debug.Log("[ActivePiece] GameOver (no GameManager present to handle it).");
+        }
+    }
+
+    // Destroy this piece root GameObject — locked blocks were reparented by GridManager
+    Destroy(gameObject);
+}
+
+
+    
+    // private void OnSettle()
+    // {
+    //     if (settled) return;
+    //     settled = true;
+    //     Debug.Log("[ActivePiece] Settled at origin " + origin + " (lockResetCount=" + lockResetCount + ")");
+    //     if (fallCoroutine != null) StopCoroutine(fallCoroutine);
+    //     leftHeld = rightHeld = downHeld = false;
+    //     // FUTURE: transfer blocks into locked layer/tilemap here
+    // }
 
     /// <summary>
     /// Try to move the piece. 'countsForLockReset' controls whether this move should
@@ -338,15 +407,27 @@ public class ActivePiece : MonoBehaviour
         foreach (var off in candidateOffsets) yield return candidateOrigin + off;
     }
 
+    // Replace whatever IsValidPosition you have with this:
     private bool IsValidPosition(IEnumerable<Vector2Int> cells)
     {
-        foreach (var c in cells)
+        if (GridManager.Instance == null)
         {
-            if (!GridManager.Instance.IsInside(c)) return false;
-            // future: also check locked tiles here
+            Debug.LogError("[ActivePiece] GridManager.Instance is null!");
+            return false;
         }
-        return true;
+        return GridManager.Instance.IsValidPosition(cells);
     }
+
+    
+    // private bool IsValidPosition(IEnumerable<Vector2Int> cells)
+    // {
+    //     foreach (var c in cells)
+    //     {
+    //         if (!GridManager.Instance.IsInside(c)) return false;
+    //         // future: also check locked tiles here
+    //     }
+    //     return true;
+    // }
 
     private Vector2Int[] RotateOffsets(Vector2Int[] source, int direction)
     {

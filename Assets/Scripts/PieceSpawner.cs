@@ -46,7 +46,7 @@ public class PieceSpawner : MonoBehaviour
         Debug.Log("[PieceSpawner] Start: spawnedfirst piece"); 
     }
 
-    void SpawnNextRandom()
+    public void SpawnNextRandom()
     {
         System.Array types = System.Enum.GetValues(typeof(TetrominoType));
         TetrominoType randomType = (TetrominoType)types.GetValue(Random.Range(0, types.Length));
