@@ -3,13 +3,11 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Active piece controller:
-/// - builds from pooled blocks
-/// - manages input (left/right/rotate/soft/hard drop)
-/// - uses a FallLoop coroutine and a LockCountdown coroutine for suspend-before-settle
-/// - simple rotation & small kick list
-/// 
-/// Phase 2: settling just stops the piece; later we'll transfer blocks into locked layer.
+/// Active piece controller (DAS/ARR for left/right; soft-drop replaces gravity).
+/// - Left/Right: DAS + ARR repeating (hold = steady repeat)
+/// - Down: replaces gravity when held (gravity waits downARR instead of fallInterval)
+/// - Only horizontal moves and rotations count for lock-reset; gravity/down moves do not.
+/// - UpArrow rotates clockwise. Space unused.
 /// </summary>
 public class ActivePiece : MonoBehaviour
 {
@@ -25,7 +23,7 @@ public class ActivePiece : MonoBehaviour
         { TetrominoType.L, new Vector2Int[]{ new(-1,0), new(0,0), new(1,0), new(1,1) } },
     };
 
-    // simple kicks to try on rotation (0 = none, then right, left, up)
+    // simple kicks to try on rotation
     private static readonly Vector2Int[] simpleKicks = new Vector2Int[] {
         new Vector2Int(0,0), new Vector2Int(1,0), new Vector2Int(-1,0), new Vector2Int(0,1)
     };
@@ -39,14 +37,39 @@ public class ActivePiece : MonoBehaviour
 
     private int rotation = 0; // 0..3
 
-    [Header("Timing")]
-    public float fallInterval = 1f;
-    public float softDropMultiplier = 0.2f;
-    public float lockDelay = 0.5f;
+    [Header("Gravity & Lock")]
+    public float fallInterval = 1f;      // base gravity interval
+    public float lockDelay = 0.5f;       // lock delay (seconds)
+
+    [Header("DAS / ARR (horizontal)")]
+    public float horizontalDAS = 0.12f;  // initial delay before repeating left/right
+    public float horizontalARR = 0.06f;  // repeat interval for left/right while holding
+
+    [Header("Soft-drop (replace gravity)")]
+    [Tooltip("When Down is held, gravity uses this interval instead of fallInterval.")]
+    public float downARR = 0.04f;        // soft-drop interval when Down is held
+    // (we do immediate single-step on KeyDown, then FallLoop will drive subsequent steps at downARR)
+
+    [Header("Lock reset settings")]
+    public int maxLockResets = 5;        // allowed successful reposition attempts while grounded
 
     private Coroutine fallCoroutine;
     private Coroutine lockCoroutine;
     private bool settled = false;
+
+    // lock reset counter
+    private int lockResetCount = 0;
+
+    // hold/timer state for horizontal keys
+    private bool leftHeld = false;
+    private bool rightHeld = false;
+    private float leftHoldTimer = 0f;
+    private float rightHoldTimer = 0f;
+    private float leftRepeatTimer = 0f;
+    private float rightRepeatTimer = 0f;
+
+    // down state (replace gravity)
+    private bool downHeld = false;
 
     // Spawn helper
     public static void Spawn(TetrominoType type, Vector2Int spawnOrigin, Color color)
@@ -63,7 +86,7 @@ public class ActivePiece : MonoBehaviour
         this.color = c;
         this.offsets = baseShapes[t];
 
-        // use pooled blocks
+        // create pooled blocks
         blocks.Clear();
         for (int i = 0; i < offsets.Length; i++)
         {
@@ -72,51 +95,139 @@ public class ActivePiece : MonoBehaviour
             var blk = blockGo.GetComponent<Block>();
             blk.ResetState();
             blk.SetColor(color);
-            blk.SetSortingOrder(20); // ensure on top
+            blk.SetSortingOrder(20);
             blocks.Add(blockGo);
         }
 
         ApplyPositionToBlocks();
 
-        // start fall loop
+        // start gravity coroutine
         fallCoroutine = StartCoroutine(FallLoop());
     }
 
     void Update()
     {
         if (settled) return;
-        HandleInput();
+        HandleInputDASARR(Time.deltaTime);
     }
 
-    private void HandleInput()
+    // Input handler for DAS/ARR (left/right) and down flag (replace gravity)
+    private void HandleInputDASARR(float dt)
     {
-        if (Input.GetKeyDown(KeyCode.LeftArrow)) TryMove(Vector2Int.left);
-        if (Input.GetKeyDown(KeyCode.RightArrow)) TryMove(Vector2Int.right);
-        if (Input.GetKeyDown(KeyCode.UpArrow) || Input.GetKeyDown(KeyCode.X)) TryRotate(+1);
-        if (Input.GetKeyDown(KeyCode.Z)) TryRotate(-1);
-        if (Input.GetKeyDown(KeyCode.Space)) HardDrop();
-        // soft drop is handled in coroutine by checking hold
+        // LEFT
+        if (Input.GetKeyDown(KeyCode.LeftArrow))
+        {
+            // immediate single step (counts for lock reset)
+            TryMove(Vector2Int.left, countsForLockReset: true);
+            leftHeld = true;
+            leftHoldTimer = 0f;
+            leftRepeatTimer = 0f;
+        }
+        if (Input.GetKeyUp(KeyCode.LeftArrow))
+        {
+            leftHeld = false;
+            leftHoldTimer = 0f;
+            leftRepeatTimer = 0f;
+        }
+        if (leftHeld)
+        {
+            leftHoldTimer += dt;
+            if (leftHoldTimer >= horizontalDAS)
+            {
+                leftRepeatTimer += dt;
+                if (leftRepeatTimer >= horizontalARR)
+                {
+                    TryMove(Vector2Int.left, countsForLockReset: true);
+                    leftRepeatTimer = 0f;
+                }
+            }
+        }
+
+        // RIGHT
+        if (Input.GetKeyDown(KeyCode.RightArrow))
+        {
+            TryMove(Vector2Int.right, countsForLockReset: true);
+            rightHeld = true;
+            rightHoldTimer = 0f;
+            rightRepeatTimer = 0f;
+        }
+        if (Input.GetKeyUp(KeyCode.RightArrow))
+        {
+            rightHeld = false;
+            rightHoldTimer = 0f;
+            rightRepeatTimer = 0f;
+        }
+        if (rightHeld)
+        {
+            rightHoldTimer += dt;
+            if (rightHoldTimer >= horizontalDAS)
+            {
+                rightRepeatTimer += dt;
+                if (rightRepeatTimer >= horizontalARR)
+                {
+                    TryMove(Vector2Int.right, countsForLockReset: true);
+                    rightRepeatTimer = 0f;
+                }
+            }
+        }
+
+        // DOWN - replace gravity:
+        if (Input.GetKeyDown(KeyCode.DownArrow))
+        {
+            // immediate single step (do NOT count for lock reset)
+            TryMove(Vector2Int.down, countsForLockReset: false);
+
+            // if in lock window, pressing Down forces immediate settle
+            if (lockCoroutine != null)
+            {
+                OnSettle();
+                return;
+            }
+
+            downHeld = true;
+        }
+        if (Input.GetKeyUp(KeyCode.DownArrow))
+        {
+            downHeld = false;
+        }
+
+        // ROTATE (Up)
+        if (Input.GetKeyDown(KeyCode.UpArrow))
+        {
+            TryRotate(+1); // rotations count for lock resets via TryRotate -> HandleSuccessfulActionDuringLock
+        }
+
+        // Space intentionally unused.
     }
 
+    // Fall loop: gravity drives down movement. When downHeld = true, we use downARR as the interval.
     private IEnumerator FallLoop()
     {
         while (true)
         {
-            float wait = fallInterval;
-            if (Input.GetKey(KeyCode.DownArrow)) wait = fallInterval * softDropMultiplier;
+            float wait = downHeld ? downARR : fallInterval;
+            // small safety: never wait zero
+            if (wait <= 0f) wait = 0.01f;
+
             yield return new WaitForSeconds(wait);
 
             if (settled) yield break;
 
-            if (!TryMove(Vector2Int.down))
+            // gravity move does NOT count for lock reset (countsForLockReset: false)
+            if (!TryMove(Vector2Int.down, countsForLockReset: false))
             {
-                // can't move down -> start lock countdown
                 if (lockCoroutine == null)
-                {
-                    lockCoroutine = StartCoroutine(LockCountdown());
-                }
+                    StartLockCountdown();
             }
         }
+    }
+
+    private void StartLockCountdown()
+    {
+        lockResetCount = 0;
+        if (lockCoroutine != null) StopCoroutine(lockCoroutine);
+        lockCoroutine = StartCoroutine(LockCountdown());
+        Debug.Log("[ActivePiece] Lock started");
     }
 
     private IEnumerator LockCountdown()
@@ -132,57 +243,63 @@ public class ActivePiece : MonoBehaviour
         lockCoroutine = null;
     }
 
-    // Called when lock completes - currently we stop motion (settle visually)
     private void OnSettle()
     {
+        if (settled) return;
         settled = true;
-        // optionally, detach children so this piece GameObject can be destroyed later
-        // For now we leave blocks as children to inspect them.
-        Debug.Log("[ActivePiece] Settled at origin " + origin);
-        // Stop falling coroutine if active
+        Debug.Log("[ActivePiece] Settled at origin " + origin + " (lockResetCount=" + lockResetCount + ")");
         if (fallCoroutine != null) StopCoroutine(fallCoroutine);
-        // FUTURE: write blocks to locked grid / tilemap here
+        leftHeld = rightHeld = downHeld = false;
+        // FUTURE: transfer blocks into locked layer/tilemap here
     }
 
-    // Try to move; returns true if succeeded
-    private bool TryMove(Vector2Int delta)
+    /// <summary>
+    /// Try to move the piece. 'countsForLockReset' controls whether this move should
+    /// be treated as a player action that may reset the lock timer. Use false for gravity/soft-drop.
+    /// </summary>
+    private bool TryMove(Vector2Int delta, bool countsForLockReset = true)
     {
         var candidateCells = GetCandidateCells(origin + delta, offsets);
         if (IsValidPosition(candidateCells))
         {
             origin += delta;
             ApplyPositionToBlocks();
-            CancelLockIfActive();
+
+            // Only horizontal moves and rotations call HandleSuccessfulActionDuringLock by passing true.
+            if (countsForLockReset)
+                HandleSuccessfulActionDuringLock();
+
             return true;
         }
         return false;
     }
 
-    private void CancelLockIfActive()
+    private void HandleSuccessfulActionDuringLock()
     {
-        if (lockCoroutine != null)
+        if (lockCoroutine == null) return;
+
+        var below = GetCandidateCells(origin + Vector2Int.down, offsets);
+        if (IsValidPosition(below))
         {
+            // piece can fall -> cancel lock
             StopCoroutine(lockCoroutine);
             lockCoroutine = null;
+            lockResetCount = 0;
+            Debug.Log("[ActivePiece] Lock cancelled (piece can fall)");
+            return;
         }
-    }
 
-    private void HardDrop()
-    {
-        while (true)
+        // Still grounded: increment reset count and maybe restart timer
+        lockResetCount++;
+        if (lockResetCount <= maxLockResets)
         {
-            var candidate = GetCandidateCells(origin + Vector2Int.down, offsets);
-            if (IsValidPosition(candidate))
-            {
-                origin += Vector2Int.down;
-            }
-            else
-            {
-                // lock immediately
-                ApplyPositionToBlocks();
-                OnSettle();
-                break;
-            }
+            StopCoroutine(lockCoroutine);
+            lockCoroutine = StartCoroutine(LockCountdown());
+            Debug.Log($"[ActivePiece] Lock reset (count {lockResetCount}/{maxLockResets})");
+        }
+        else
+        {
+            Debug.Log($"[ActivePiece] Lock reset limit reached ({lockResetCount}). No more resets.");
         }
     }
 
@@ -198,14 +315,13 @@ public class ActivePiece : MonoBehaviour
                 origin += kick;
                 rotation = (rotation + direction + 4) % 4;
                 ApplyPositionToBlocks();
-                CancelLockIfActive();
+                // rotation counts as a player action for lock resets
+                HandleSuccessfulActionDuringLock();
                 return;
             }
         }
-        // failed rotation
     }
 
-    // Apply origin+offsets to the pooled block GameObjects (world positions)
     private void ApplyPositionToBlocks()
     {
         for (int i = 0; i < blocks.Count; i++)
@@ -213,24 +329,21 @@ public class ActivePiece : MonoBehaviour
             var go = blocks[i];
             Vector2Int cell = origin + offsets[i];
             Vector3 world = GridManager.Instance.CellToWorld(cell);
-            // ensure slight z above tilemap so blocks are visible
-            go.transform.position = new Vector3(world.x, world.y, -0.1f);
+            go.transform.position = new Vector3(world.x, world.y, 0f);
         }
     }
 
-    // Utility: produce the candidate cells for given origin and offsets
     private IEnumerable<Vector2Int> GetCandidateCells(Vector2Int candidateOrigin, Vector2Int[] candidateOffsets)
     {
         foreach (var off in candidateOffsets) yield return candidateOrigin + off;
     }
 
-    // For Phase 2: valid position = inside grid and optionally not overlapping locked blocks (future)
     private bool IsValidPosition(IEnumerable<Vector2Int> cells)
     {
         foreach (var c in cells)
         {
             if (!GridManager.Instance.IsInside(c)) return false;
-            // future: also check locked blocks layer or Tilemap here
+            // future: also check locked tiles here
         }
         return true;
     }
