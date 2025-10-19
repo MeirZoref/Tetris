@@ -1,2 +1,2 @@
 ### After cloning the repo and opening in the unity editor:
-### if the scene in the editor hierarchy is an empty default screen - please open the scene from Assets/Scenes folder, and remove the empty scene from the hierarchy
+### If the scene in the editor hierarchy is an empty default screen - Please open the scene from Assets/Scenes folder, and remove the empty scene from the hierarchy
