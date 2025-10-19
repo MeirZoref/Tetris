@@ -1,19 +1,15 @@
 using UnityEngine;
 using UnityEngine.Tilemaps;
 
-/// <summary>
-/// Fill a Tilemap with a background tile for the GridManager play area.
-/// ExecuteInEditMode so the tilemap is visible while editing.
-/// </summary>
 [ExecuteAlways]
 [RequireComponent(typeof(Tilemap))]
 public class TilemapGridFiller : MonoBehaviour
 {
     [Header("Grid Filler Settings")]
-    public GridManager gridManager;           // optional reference (will use GridManager.Instance if null)
-    public TileBase backgroundTile;          // tile to paint for each cell
-    public bool fillInEditMode = true;       // if true, fill even while not playing
-    public bool clearOnDisable = false;      // optionally clear tiles when disabled
+    public GridManager gridManager; // optional reference (will use GridManager.Instance if null)
+    public TileBase backgroundTile; // tile to paint for each cell
+    public bool fillInEditMode = true; // if true, fill even while not playing
+    public bool clearOnDisable = false; // optionally clear tiles when disabled
 
     Tilemap tilemap;
 
@@ -35,11 +31,7 @@ public class TilemapGridFiller : MonoBehaviour
             tilemap.ClearAllTiles();
         }
     }
-
-    /// <summary>
-    /// Fill the entire grid area with background tiles.
-    /// This is idempotent — repeated calls don't duplicate painting.
-    /// </summary>
+    
     [ContextMenu("Fill Grid")]
     public void Fill()
     {
@@ -67,15 +59,12 @@ public class TilemapGridFiller : MonoBehaviour
         tilemap.RefreshAllTiles();
         Debug.Log($"[TilemapGridFiller] Filled {w}x{h} cells.");
     }
-
-    // For convenience, call Fill from inspector via Update if requested
+    
     void Update()
     {
 #if UNITY_EDITOR
-        // keep tilemap in sync while editing (optional: comment out to stop continuous updates)
         if (!Application.isPlaying && fillInEditMode)
         {
-            // Optional: only fill when missing tiles to avoid editor slowdown
             if (tilemap != null && tilemap.GetTile(new Vector3Int(0, 0, 0)) != backgroundTile)
             {
                 Fill();

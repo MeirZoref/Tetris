@@ -1,8 +1,5 @@
 using UnityEngine;
 
-/// <summary>
-/// Lightweight helper for pooled block GameObjects.
-/// </summary>
 [RequireComponent(typeof(SpriteRenderer))]
 public class Block : MonoBehaviour
 {

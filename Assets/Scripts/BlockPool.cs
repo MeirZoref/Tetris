@@ -1,15 +1,12 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-/// <summary>
-/// Simple pool for block GameObjects. Keep one BlockPool in the scene and assign blockPrefab.
-/// </summary>
 public class BlockPool : MonoBehaviour
 {
     public static BlockPool Instance { get; private set; }
 
     [Header("Pool")]
-    public GameObject blockPrefab; // assign Block prefab in inspector
+    public GameObject blockPrefab; 
     public int initialSize = 200;
 
     private Queue<GameObject> pool = new Queue<GameObject>();
@@ -54,7 +51,7 @@ public class BlockPool : MonoBehaviour
     public void Return(GameObject go)
     {
         if (go == null) return;
-        // Reset transform state lightly (caller can reset more if needed)
+
         go.transform.SetParent(transform, worldPositionStays: false);
         go.SetActive(false);
         pool.Enqueue(go);
